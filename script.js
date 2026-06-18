@@ -345,8 +345,13 @@ function showDropdown(role, currentCode, stepIndex) {
       it.label.toLowerCase().includes(q) ||
       it.name.toLowerCase().includes(q)
     );
+    if (filtered.length === 0) {
+      list.innerHTML = '<div class="dropdown-empty">No results</div>';
+      return;
+    }
     filtered.forEach(it => {
-      const opt = ce('button', 'dropdown-item' + (it.id === currentCode ? ' selected' : ''), '');
+      const opt = document.createElement('button');
+      opt.className = 'dropdown-item' + (it.id === currentCode ? ' selected' : '');
       opt.innerHTML = `${it.icon} <span class="di-label">${it.label}</span> <span class="di-name">${it.name}</span>` +
         (it.price ? `<span class="di-price">$${formatAmt(it.price)}</span>` : '');
       opt.dataset.id = it.id;

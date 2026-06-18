@@ -391,6 +391,12 @@ body {
   font-size: 11px;
   flex-shrink: 0;
 }
+.dropdown-empty {
+  padding: 20px 16px;
+  text-align: center;
+  color: var(--text2);
+  font-size: 13px;
+}
 
 /* ---------- Error ---------- */
 .error-msg {
