@@ -2,51 +2,48 @@
 
 Multi-step currency and cryptocurrency converter with live rates, chain conversion, and intermediate steps.
 
-![RateChain screenshot](screenshot.png)
+**Live:** https://lionbabycrypto.github.io/ratechain/
 
 ## Features
 
-- **Live fiat rates** via [Frankfurter API](https://api.frankfurter.dev)
-- **Crypto prices** via [CoinGecko API](https://www.coingecko.com/en/api)
+- **Live fiat rates** via [Frankfurter API](https://frankfurter.dev) — 164 currencies
+- **Crypto prices** via [CoinGecko API](https://www.coingecko.com/en/api) — top 100 coins
 - **Multi-step chain conversion** — convert through multiple currencies/cryptos in one chain
-- **Searchable dropdowns** with flag emojis for fiat and CoinGecko icons for crypto
+- **Searchable dropdowns** with flag emojis (fiat) + CoinGecko icons (crypto), keyboard arrow nav, Enter selection, Escape to close
 - **Dark/light theme** with animated toggle
 - **Swap, add/remove steps** interactively
-- **Local caching** — rates cached for 5 minutes
-- **Zero dependencies** — pure vanilla HTML/CSS/JS
+- **Local caching** — rates cached 5 min in localStorage
+- **Responsive** — 320px to 1920px, touch targets for mobile
+- **Zero dependencies** — pure vanilla HTML/CSS/JS, no frameworks
 
-## Live Demo
+## Usage
 
-https://lionbabycrypto.github.io/ratechain/
+1. Enter an amount
+2. Tap "From" or "To" to select currencies — start typing to search
+3. Tap "+ Add intermediate step" for multi-hop chains
+4. Tap swap icon (↕) to invert base/target
+5. Dark/light toggle in top-right corner
 
 ## Run Locally
 
 ```bash
-# Clone the repo
 git clone https://github.com/lionbabycrypto/ratechain.git
 cd ratechain
-
-# Open in browser (no build step needed)
 open index.html
 ```
 
-Or serve with any static server:
+Or serve locally:
 
 ```bash
 python3 -m http.server 8000
-# Then open http://localhost:8000
+# http://localhost:8000
 ```
 
-## How It Works
+## Tech
 
-1. Enter an amount in the base currency
-2. Select the target currency
-3. Optionally add intermediate steps for multi-hop conversions
-4. The result updates instantly
-
-Conversion formula: `amount × usdPrice(origin) / usdPrice(target)`
-
-For multi-step: each intermediate currency shows its converted amount using the same formula applied sequentially.
+- **Fiat rates:** Frankfurter v2 (`GET /v2/rates?base=USD`)
+- **Crypto prices:** CoinGecko (`/coins/markets?vs_currency=usd`)
+- **Conversion:** `amount × usdPrice(from) / usdPrice(to)` per hop
 
 ## License
 
