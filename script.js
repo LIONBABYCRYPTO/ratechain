@@ -74,7 +74,7 @@ function cacheSet(key, data) {
 async function fetchFiatRates() {
   const cached = cacheGet('fiat');
   if (cached) return cached;
-  const res = await fetch('https://api.frankfurter.dev/latest');
+  const res = await fetch('https://api.frankfurter.dev/v1/latest');
   const json = await res.json();
   // Frankfurter returns rates relative to EUR; convert to USD base
   const usdRate = json.rates.USD;
