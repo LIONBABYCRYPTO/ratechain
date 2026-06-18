@@ -30,7 +30,7 @@ const FLAGS = {
   "SAR":"🇸🇦","SBD":"🇸🇧","SCR":"🇸🇨","SDG":"🇸🇩","SEK":"🇸🇪","SGD":"🇸🇬","SHP":"🇸🇭",
   "SLL":"🇸🇱","SOS":"🇸🇴","SRD":"🇸🇷","SSP":"🇸🇸","STN":"🇸🇹","SYP":"🇸🇾","SZL":"🇸🇿",
   "THB":"🇹🇭","TJS":"🇹🇯","TMT":"🇹🇲","TND":"🇹🇳","TOP":"🇹🇴","TRY":"🇹🇷","TTD":"🇹🇹",
-  "TVD":"🇹🇻","TWD":"🇹🇼","TZS":"🇹🇿","UAH":"🇺🇦","UGX":"🇺🇬","USD":"🇺🇸","UYU":"🇺🇾",
+  "TVD":"🇹🇻","TWD":"🇹🇼","TZS":"🇹��","UAH":"🇺🇦","UGX":"🇺🇬","USD":"🇺🇸","UYU":"🇺🇾",
   "UZS":"🇺🇿","VES":"🇻🇪","VND":"🇻🇳","VUV":"🇻🇺","WST":"🇼🇸","XAF":"🇨🇲","XCD":"🇱🇨",
   "XDR":"🌐","XOF":"🇧🇫","XPF":"🇵🇫","YER":"🇾🇪","ZAR":"🇿🇦","ZMW":"🇿🇲","ZWL":"🇿🇼"
 };
@@ -74,7 +74,8 @@ function cacheSet(key, data) {
 async function fetchFiatRates() {
   const cached = cacheGet('fiat');
   if (cached) return cached;
-  // Frankfurter v2 returns flat array of {base, quote, rate} — base=USD gives direct rates
+  // Frankfurter v2: returns array of {date, base, quote, rate}
+  // Using base=USD gives us direct rates per 1 USD
   const res = await fetch('https://api.frankfurter.dev/v2/rates?base=USD');
   const arr = await res.json();
   const rates = {};
@@ -112,7 +113,6 @@ async function fetchAllData() {
 
 // ---------- TYPE DETECTION ----------
 function isFiat(code) { return !!FLAGS[code]; }
-function isCrypto(code) { return state.cryptoData.some(c => c.id === code || c.symbol.toUpperCase() === code); }
 
 function getRate(code) {
   if (isFiat(code)) return state.fiatRates[code] || 0;
@@ -159,72 +159,40 @@ function getSortedAllItems() {
  * convert through each intermediate step (state.steps),
  * end result in state.targetCurrency.
  *
- * At each hop: newAmount = amount * (rate(from) / rate(to))
- * where rate(X) = USD price of X (i.e., how many USD per 1 X).
+ * Formula: value_in_target = amount × usdPrice(from) / usdPrice(to)
  *
- * Why this works: If we have $100 USD and want JPY:
- *   100 USD * (1 / 149.5) = 0.668 EUR  → then  0.668 EUR * 149.5 JPY/EUR = 100 JPY? No.
- * Actually: 100 USD * (rate(JPY)/rate(USD)) = 100 * (149.5/1) = 14,950 JPY. Correct.
+ * Where usdPrice(X) = USD market price of X:
+ *   - For fiat: usdPrice = 1 / (USD/fiat rate from API)
+ *   - For crypto: usdPrice = CoinGecko current_price
+ *   - For USD: usdPrice = 1
  *
- * Cross rate: Convert USD→BTC→JPY:
- *   BTC price = 67,000 USD/BTC. So $100 = 100/67,000 = 0.001492 BTC.
- *   Then 0.001492 BTC × 149.5 JPY/USD?? No — BTC in JPY = BTC in USD × USD/JPY rate.
- *   Actually: JPY amount = baseAmount × (rate(JPY) / rate(BTC))
- *   = 100 × (149.5 / 67000) = 0.223 JPY... wrong.
+ * For multi-step chains, each intermediate shows its converted amount
+ * using the same formula applied sequentially:
+ *   amount_in_next = amount_in_prev × usdPrice(prev) / usdPrice(next)
  *
- * Better formula: Work in USD terms.
- *   value_in_usd = baseAmount × usdPrice[baseCurrency]
- *   value_in_target = value_in_usd / usdPrice[targetCurrency]
- *
- * Where usdPrice[fiat] = 1 / fiatRates[fiat] (because fiatRates are per-USD)
- *       usdPrice[crypto] = coin.current_price from CoinGecko
- *
- * So chain = convert to USD, then convert from USD through each step.
- *   For each step X: value = value * (usdPrice[X] / usdPrice[prev])
- *   Final: value = value * (usdPrice[target] / usdPrice[lastStep])
+ * Final result depends only on from and to rates because intermediate
+ * rates cancel out: amount × usd(from)/usd(step1) × usd(step1)/usd(step2) × usd(step2)/usd(to)
+ * = amount × usd(from) / usd(to)
  */
 function usdPrice(code) {
   if (code === 'USD') return 1;
-  if (isFiat(code)) return 1 / (state.fiatRates[code] || 1);
+  if (isFiat(code) && state.fiatRates[code]) return 1 / state.fiatRates[code];
   const coin = state.cryptoData.find(c => c.id === code || c.symbol.toUpperCase() === code);
   return coin ? coin.current_price : 0;
 }
 
-function convertChain(amount, from, steps, to) {
-  let value = amount * usdPrice(from); // convert to USD
-  for (const step of steps) {
-    value = value / usdPrice(step); // convert from USD to step
-    value = value * usdPrice(step); // wait — that's a no-op
-    // Correct: value (in USD) → value / usdPrice(step) = amount in step currency
-    // Actually the chain already represents: from → step1 → step2 → ... → to
-    // Each hop: amount_in_prev * usdPrice(prev) = usd_value → usd_value / usdPrice(next) = amount_in_next
-    // Simplified: amount_in_next = amount_in_prev * usdPrice(prev) / usdPrice(next)
-  }
-  // Recalculate properly:
-  let v = amount * usdPrice(from); // start in USD
-  for (const s of steps) {
-    v = v / usdPrice(s); // convert USD → step currency
-    v = v * usdPrice(s); // that cancels. Mistake.
-    // Correct: v is in USD. To convert to step: v / usdPrice(step) = amount in step.
-    // But then next hop: amount_in_step * usdPrice(step) / usdPrice(next) = (v / usdPrice(step)) * usdPrice(step) / usdPrice(next) = v / usdPrice(next)
-    // So each step just divides by usdPrice of the step. Final multiply by 1.
-    // Actually: from→step1→step2→to: amount × usd(from) / usd(step1) × usd(step1) / usd(step2) × usd(step2) / usd(to)
-    // = amount × usd(from) / usd(to). Steps cancel out — they don't matter if all values are in USD terms.
-  }
-  // The steps DO matter for the display — each intermediate shows the amount in that currency.
-  // But the FINAL result depends only on from and to rates.
-  return { final: amount * usdPrice(from) / usdPrice(to), intermediates: [] };
-}
-
+/**
+ * Full chain calculation with intermediate breakdown.
+ * Returns { results: [{currency, amount}...], final: number }
+ */
 function calculateFull(from, steps, to, amount) {
-  // Accurate multi-step calculation
   const steps2 = [from, ...steps, to];
   const results = [];
   let prev = from;
   let amt = amount;
   for (let i = 1; i < steps2.length; i++) {
     const cur = steps2[i];
-    // amount in cur = amt * usdPrice(prev) / usdPrice(cur)
+    // amount in cur = amt × usdPrice(prev) / usdPrice(cur)
     amt = amt * usdPrice(prev) / usdPrice(cur);
     results.push({ currency: cur, amount: amt });
     prev = cur;
@@ -281,8 +249,7 @@ function render() {
   // Result
   const resultDiv = ce('div', 'result');
   const calc = calculateFull(state.baseCurrency, state.steps, state.targetCurrency, state.baseAmount);
-  const targetName = getDisplayName(state.targetCurrency);
-  resultDiv.innerHTML = `<span class="result-label">→ ${targetName}</span><span class="result-value">${formatAmt(calc.final)}</span>`;
+  resultDiv.innerHTML = `<span class="result-label">→ ${getDisplayName(state.targetCurrency)}</span><span class="result-value">${formatAmt(calc.final)}</span>`;
   app.appendChild(resultDiv);
 
   // Intermediate breakdown
@@ -310,17 +277,6 @@ function render() {
     const lu = ce('div', 'last-updated', 'Updated: ' + state.lastUpdated.toLocaleTimeString());
     app.appendChild(lu);
   }
-
-  // Attach dropdown buttons
-  document.querySelectorAll('.curr-trigger').forEach(el => {
-    el.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const role = el.dataset.role;
-      const stepIndex = el.dataset.stepIndex !== undefined ? parseInt(el.dataset.stepIndex) : null;
-      const currentCode = el.dataset.code;
-      showDropdown(role, currentCode, stepIndex);
-    });
-  });
 }
 
 // ---------- CURRENCY ROW ----------
@@ -373,7 +329,6 @@ function showDropdown(role, currentCode, stepIndex) {
   dropdownActive = true;
   const items = getSortedAllItems();
   const overlay = ce('div', 'dropdown-overlay');
-  overlay.addEventListener('click', () => { closeDropdown(overlay); });
 
   const panel = ce('div', 'dropdown-panel');
   const search = ce('input', 'dropdown-search');
@@ -406,14 +361,13 @@ function showDropdown(role, currentCode, stepIndex) {
   search.addEventListener('input', () => filterList(search.value));
   filterList('');
 
-  // Delay focusing to avoid immediate key strokes affecting input
   setTimeout(() => search.focus(), 50);
 
   panel.append(search, list);
   overlay.appendChild(panel);
   document.body.appendChild(overlay);
 
-  // Close on click outside
+  // Close on outside click
   overlay.addEventListener('mousedown', (e) => {
     if (e.target === overlay) closeDropdown(overlay);
   });
@@ -458,7 +412,6 @@ document.addEventListener('click', (e) => {
   }
 
   if (action === 'addStep') {
-    // Insert a default step (midway between base and target)
     state.steps.push('GBP');
     render();
     return;
@@ -499,5 +452,8 @@ function formatAmt(n) {
   return n.toExponential(2);
 }
 
-// ---------- INIT ----------
+// ---------- CLEAR OLD CACHE THEN INIT ----------
+// Force-clear any stale localStorage cache from v1 API
+try { localStorage.removeItem('rc_fiat'); } catch {}
+
 fetchAllData();
