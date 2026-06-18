@@ -1,14 +1,14 @@
 // ============================================================
-// RateChain v3.0 — USD ↔ SGD Converter w/ intermediate steps
+// RateChain v2.0 — Interactive Currency & Crypto Converter
 // ============================================================
 // APIs:
 //   - Frankfurter v2: https://api.frankfurter.dev/v2/rates?base=USD
 //   - CoinGecko:      https://api.coingecko.com/api/v3/coins/markets
 // Conversion: amount × usdPrice(from) / usdPrice(to) per hop
-// Cached in localStorage with 5-min TTL.
+// All cached in localStorage with 5-min TTL.
 // ============================================================
 
-// ---------- FLAG EMOJI MAP ----------
+// ---------- FLAG EMOJI MAP (164 fiat currencies) ----------
 const FLAGS = {
   "AED":"🇦🇪","AFN":"🇦🇫","ALL":"🇦🇱","AMD":"🇦🇲","ANG":"🇨🇼","AOA":"🇦🇴","ARS":"🇦🇷",
   "AUD":"🇦🇺","AWG":"🇦🇼","AZN":"🇦🇿","BAM":"🇧🇦","BBD":"🇧🇧","BDT":"🇧🇩","BGN":"🇧🇬",
@@ -40,15 +40,14 @@ const state = {
   fiatRates: {},        // { "JPY": 160.42, ... } — USD per 1 unit of currency
   cryptoData: [],       // [{ id, symbol, name, image, current_price }, ...]
   baseAmount: 1,
-  // From is always USD, To is always SGD
+  baseCurrency: "USD",
   steps: [],            // Array of intermediate currency/crypto IDs
+  targetCurrency: "EUR",
   lastUpdated: null,
-  theme: "dark",
-  // Mode: "direct" = USD→SGD direct, "stepped" = USD→step1→...→SGD
-  mode: "direct"
+  theme: "dark"
 };
 
-// ---------- DOM CACHE ----------
+// ---------- DOM CACHE (avoids re-render destroying inputs) ----------
 const dom = {};
 let isRendered = false;
 
@@ -70,6 +69,7 @@ function cacheGet(key) {
 function cacheSet(key, data) {
   try { localStorage.setItem('rc_' + key, JSON.stringify({ data, ts: Date.now() })); } catch {}
 }
+// Clear stale v1 cache
 try { localStorage.removeItem('rc_fiat'); } catch {}
 
 // ---------- API CALLS ----------
@@ -114,7 +114,7 @@ async function fetchAllData() {
   }
 }
 
-// ---------- LOADING ----------
+// ---------- LOADING STATE ----------
 function showLoading() {
   const root = document.getElementById('app');
   root.innerHTML =
@@ -123,6 +123,7 @@ function showLoading() {
 
 // ---------- TYPE DETECTION ----------
 function isFiat(code) { return !!FLAGS[code]; }
+function isCrypto(code) { return state.cryptoData.some(c => c.id === code || c.symbol.toUpperCase() === code); }
 
 function getDisplayName(code) {
   if (isFiat(code)) return code;
@@ -146,9 +147,11 @@ function getIcon(code) {
 
 function getSortedAllItems() {
   const items = [];
+  // Fiat alphabetical
   Object.keys(state.fiatRates).sort().forEach(c => {
     items.push({ id: c, label: c, name: getFullName(c), icon: FLAGS[c] || '💱', type: 'fiat' });
   });
+  // Crypto by market cap (already sorted from API)
   state.cryptoData.forEach(c => {
     items.push({
       id: c.id, label: c.symbol.toUpperCase(), name: c.name,
@@ -159,8 +162,11 @@ function getSortedAllItems() {
   return items;
 }
 
-// ---------- USD PRICE ----------
+// ---------- USD PRICE LOOKUP ----------
 // usdPrice(X) = how many USD per 1 unit of currency X
+// For fiat: usdPrice = 1 / (USD/fiat rate from Frankfurter)
+// For crypto: usdPrice = CoinGecko current_price
+// For USD: usdPrice = 1
 function usdPrice(code) {
   if (code === 'USD') return 1;
   if (isFiat(code) && state.fiatRates[code]) return 1 / state.fiatRates[code];
@@ -170,19 +176,23 @@ function usdPrice(code) {
 
 // ---------- CHAIN CONVERSION ----------
 // Chain: amount × usdPrice(from) / usdPrice(step1) × usdPrice(step1) / usdPrice(step2) ...
-// = amount × usdPrice(from) / usdPrice(to)
+// Final: = amount × usdPrice(from) / usdPrice(to)
+// Each intermediate shows its converted value.
 function calculateFull(from, steps, to, amount) {
   const chain = [from, ...steps, to];
   const results = [];
+  let prev = from;
   let amt = amount;
   for (let i = 1; i < chain.length; i++) {
-    amt = amt * usdPrice(chain[i - 1]) / usdPrice(chain[i]);
-    results.push({ currency: chain[i], amount: amt });
+    const cur = chain[i];
+    amt = amt * usdPrice(prev) / usdPrice(cur);
+    results.push({ currency: cur, amount: amt });
+    prev = cur;
   }
   return { results, final: amt };
 }
 
-// ---------- FORMAT ----------
+// ---------- FORMAT NUMBER ----------
 function formatAmt(n) {
   if (n === 0 || !isFinite(n)) return '0.00';
   if (n >= 1) return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -191,19 +201,20 @@ function formatAmt(n) {
   return n.toExponential(2);
 }
 
-// ---------- BUILD STATIC DOM ----------
+// ---------- BUILD STATIC DOM (once, then update only values) ----------
 function buildStaticDOM() {
   if (isRendered) return;
   isRendered = true;
   const root = document.getElementById('app');
   root.className = state.theme;
-  root.innerHTML = '';
+  root.innerHTML = ''; // clear loading
 
   // --- Header ---
   dom.header = ce('div', 'header');
   dom.title = ce('h1', 'title', 'RateChain');
   dom.themeBtn = ce('button', 'theme-toggle', '');
   dom.themeBtn.setAttribute('aria-label', 'Toggle dark mode');
+  dom.themeBtn.dataset.action = 'toggleTheme';
   dom.themeBtn.innerHTML = getThemeIcon();
   dom.header.append(dom.title, dom.themeBtn);
   root.appendChild(dom.header);
@@ -222,18 +233,11 @@ function buildStaticDOM() {
   dom.amtWrap.append(dom.amtInput, dom.amtUnderline);
   root.appendChild(dom.amtWrap);
 
-  // --- Base Row (always USD) ---
-  dom.baseRow = createFixedRow('From', 'USD');
+  // --- Base Row ---
+  dom.baseRow = createCurrencyRowStatic('base', 'base');
   root.appendChild(dom.baseRow);
-
-  // --- Mode Toggle ---
-  dom.modeWrap = ce('div', 'mode-toggle-wrap');
-  dom.directBtn = ce('button', 'mode-btn active', 'USD → SGD');
-  dom.directBtn.dataset.mode = 'direct';
-  dom.steppedBtn = ce('button', 'mode-btn', 'Via steps →');
-  dom.steppedBtn.dataset.mode = 'stepped';
-  dom.modeWrap.append(dom.directBtn, dom.steppedBtn);
-  root.appendChild(dom.modeWrap);
+  dom.baseTrigger = dom.baseRow.querySelector('.curr-trigger');
+  dom.baseTrigger.dataset.role = 'base';
 
   // --- Steps Container ---
   dom.stepsContainer = ce('div', 'steps-container');
@@ -245,13 +249,15 @@ function buildStaticDOM() {
   dom.addBtn.dataset.action = 'addStep';
   root.appendChild(dom.addBtn);
 
-  // --- Target Row (always SGD) ---
-  dom.targetRow = createFixedRow('To', 'SGD');
+  // --- Target Row ---
+  dom.targetRow = createCurrencyRowStatic('target', 'target');
   root.appendChild(dom.targetRow);
+  dom.targetTrigger = dom.targetRow.querySelector('.curr-trigger');
+  dom.targetTrigger.dataset.role = 'target';
 
   // --- Result ---
   dom.resultDiv = ce('div', 'result');
-  dom.resultLabel = ce('span', 'result-label', '→ SGD');
+  dom.resultLabel = ce('span', 'result-label', '→ EUR');
   dom.resultValue = ce('span', 'result-value', '0.00');
   dom.resultDiv.append(dom.resultLabel, dom.resultValue);
   root.appendChild(dom.resultDiv);
@@ -269,52 +275,73 @@ function buildStaticDOM() {
   bindEvents();
 }
 
-// ---------- CREATE FIXED ROW ----------
-function createFixedRow(label, code) {
+// ---------- CREATE STATIC CURRENCY ROW ----------
+function createCurrencyRowStatic(label, id) {
   const row = ce('div', 'curr-row');
-  const lbl = ce('span', 'curr-label', label);
-  const display = ce('div', 'curr-display');
-  display.innerHTML = `${getIcon(code)} <span class="curr-code">${code}</span>`;
-  row.append(lbl, display);
+  const labelSpan = ce('span', 'curr-label', label === 'base' ? 'From' : 'To');
+  const trigger = ce('button', 'curr-trigger', '');
+  const code = label === 'base' ? state.baseCurrency : state.targetCurrency;
+  const iconHtml = getIcon(code);
+  const display = getDisplayName(code);
+  trigger.innerHTML =
+    `${iconHtml} <span class="curr-code">${display}</span>` +
+    `<svg class="chev" viewBox="0 0 24 24" width="12" height="12"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`;
+  trigger.setAttribute('aria-label', `Select ${label} currency`);
+  row.append(labelSpan, trigger);
+
+  if (label === 'base') {
+    const swapBtn = ce('button', 'swap-btn', '');
+    swapBtn.innerHTML =
+      '<svg viewBox="0 0 24 24" width="16" height="16"><path d="M7 16V4l-3 3m10 4v12l3-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    swapBtn.setAttribute('aria-label', 'Swap currencies');
+    swapBtn.dataset.action = 'swap';
+    labelSpan.appendChild(swapBtn);
+  }
+
   return row;
 }
 
-// ---------- UPDATE RESULT (partial re-render) ----------
+// ---------- UPDATE RESULT (partial re-render, no DOM rebuild) ----------
 function updateResult() {
   if (!isRendered) return;
 
-  // Theme
+  // Update theme class
   document.getElementById('app').className = state.theme;
 
-  // Theme icon
+  // Update theme icon
   dom.themeBtn.innerHTML = getThemeIcon();
 
-  // Amount (no focus loss)
+  // Update amount input value (no focus loss — same element)
   if (document.activeElement !== dom.amtInput) {
     dom.amtInput.value = state.baseAmount;
   }
 
-  // Mode buttons
-  dom.directBtn.className = 'mode-btn' + (state.mode === 'direct' ? ' active' : '');
-  dom.steppedBtn.className = 'mode-btn' + (state.mode === 'stepped' ? ' active' : '');
+  // Update base trigger
+  const baseIcon = getIcon(state.baseCurrency);
+  const baseName = getDisplayName(state.baseCurrency);
+  dom.baseTrigger.innerHTML =
+    `${baseIcon} <span class="curr-code">${baseName}</span>` +
+    `<svg class="chev" viewBox="0 0 24 24" width="12" height="12"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`;
 
-  // Steps visibility
-  const showSteps = state.mode === 'stepped';
-  dom.stepsContainer.style.display = showSteps ? '' : 'none';
-  dom.addBtn.style.display = showSteps ? '' : 'none';
+  // Update target trigger
+  const targetIcon = getIcon(state.targetCurrency);
+  const targetName = getDisplayName(state.targetCurrency);
+  dom.targetTrigger.innerHTML =
+    `${targetIcon} <span class="curr-code">${targetName}</span>` +
+    `<svg class="chev" viewBox="0 0 24 24" width="12" height="12"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`;
 
   // Rebuild steps
   rebuildSteps();
 
-  // Calculate
-  const calc = calculateFull('USD', state.steps, 'SGD', state.baseAmount);
-  dom.resultLabel.textContent = state.mode === 'direct' ? '→ SGD' : `→ SGD (via ${state.steps.length} step${state.steps.length !== 1 ? 's' : ''})`;
+  // Calculate result
+  const calc = calculateFull(state.baseCurrency, state.steps, state.targetCurrency, state.baseAmount);
+  dom.resultLabel.textContent = `→ ${getDisplayName(state.targetCurrency)}`;
   dom.resultValue.textContent = formatAmt(calc.final);
 
   // Rebuild breakdown
-  rebuildBreakdown(state.steps, state.baseAmount);
+  rebuildBreakdown(state.baseCurrency, state.steps, state.targetCurrency, state.baseAmount);
 
-  // Timestamp
+  // Update timestamp
   if (state.lastUpdated) {
     dom.lastUpdated.textContent = 'Updated: ' + state.lastUpdated.toLocaleTimeString();
   }
@@ -325,15 +352,15 @@ function rebuildSteps() {
   const container = dom.stepsContainer;
   container.innerHTML = '';
   state.steps.forEach((code, i) => {
-    const row = ce('div', 'step-row');
-    const labelSpan = ce('span', 'step-label', 'Step ' + (i + 1));
+    const row = ce('div', 'curr-row step-row');
+    const labelSpan = ce('span', 'curr-label', 'Step ' + (i + 1));
     const removeBtn = ce('button', 'remove-step', '×');
     removeBtn.dataset.action = 'removeStep';
     removeBtn.dataset.stepIndex = i;
     removeBtn.setAttribute('aria-label', 'Remove step ' + (i + 1));
     labelSpan.appendChild(removeBtn);
 
-    const trigger = ce('button', 'step-trigger', '');
+    const trigger = ce('button', 'curr-trigger', '');
     const iconHtml = getIcon(code);
     const display = getDisplayName(code);
     trigger.innerHTML =
@@ -347,13 +374,13 @@ function rebuildSteps() {
 }
 
 // ---------- REBUILD BREAKDOWN ----------
-function rebuildBreakdown(steps, amount) {
+function rebuildBreakdown(from, steps, to, amount) {
   const bd = dom.breakdown;
   bd.innerHTML = '';
-  if (steps.length === 0) { bd.style.display = 'none'; return; }
+  if (steps.length === 0) return;
   bd.style.display = '';
 
-  let prev = 'USD';
+  let prev = from;
   let amt = amount;
   for (const cur of steps) {
     amt = amt * usdPrice(prev) / usdPrice(cur);
@@ -363,13 +390,13 @@ function rebuildBreakdown(steps, amount) {
     prev = cur;
   }
   // Final
-  amt = amt * usdPrice(prev) / usdPrice('SGD');
+  amt = amt * usdPrice(prev) / usdPrice(to);
   const row = ce('div', 'breakdown-row final');
-  row.innerHTML = `<span>${getIcon('SGD')} SGD</span><span>${formatAmt(amt)}</span>`;
+  row.innerHTML = `<span>${getIcon(to)} ${getDisplayName(to)}</span><span>${formatAmt(amt)}</span>`;
   bd.appendChild(row);
 }
 
-// ---------- DROPDOWN ----------
+// ---------- DROPDOWN (standalone, manages its own DOM) ----------
 let dropdownActive = false;
 let ddOverlay = null;
 
@@ -425,11 +452,13 @@ function showDropdown(role, currentCode, stepIndex) {
 
   renderList('');
 
+  // Keyboard navigation
   search.addEventListener('keydown', (e) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
       highlightIndex = Math.min(highlightIndex + 1, filteredItems.length - 1);
       renderList(search.value);
+      // Scroll into view
       const highlighted = list.querySelector('.highlighted');
       if (highlighted) highlighted.scrollIntoView({ block: 'nearest' });
     } else if (e.key === 'ArrowUp') {
@@ -458,23 +487,28 @@ function showDropdown(role, currentCode, stepIndex) {
   ddOverlay.appendChild(panel);
   document.body.appendChild(ddOverlay);
 
+  // Stop propagation so global input handler doesn't fire
   search.addEventListener('input', (e) => e.stopPropagation());
   search.addEventListener('keydown', (e) => e.stopPropagation());
 
+  // Focus search
   setTimeout(() => search.focus(), 50);
 
+  // Close on overlay click
   ddOverlay.addEventListener('pointerdown', (e) => {
     if (e.target === ddOverlay) closeDropdown();
   });
 
-  // Global Escape cleanup
+  // Global Escape — clean up on close
   const escHandler = (e) => { if (e.key === 'Escape') closeDropdown(); };
   document.addEventListener('keydown', escHandler);
 
+  // Override closeDropdown to clean up
   const origClose = closeDropdown;
   closeDropdown = function() {
     document.removeEventListener('keydown', escHandler);
     origClose();
+    // Restore original for next open
     closeDropdown = origClose;
   };
 }
@@ -486,13 +520,13 @@ function closeDropdown() {
 }
 
 function selectItem(role, id, stepIndex) {
-  if (role === 'step' && stepIndex !== null) {
-    state.steps[stepIndex] = id;
-    updateResult();
-  }
+  if (role === 'base') state.baseCurrency = id;
+  else if (role === 'target') state.targetCurrency = id;
+  else if (role === 'step' && stepIndex !== null) state.steps[stepIndex] = id;
+  updateResult();
 }
 
-// ---------- EVENT BINDING ----------
+// ---------- EVENT BINDING (once) ----------
 function bindEvents() {
   // Amount input
   dom.amtInput.addEventListener('input', () => {
@@ -503,24 +537,15 @@ function bindEvents() {
     updateResult();
   });
 
-  // Mode toggle
-  dom.directBtn.addEventListener('click', () => {
-    if (state.mode === 'direct') return;
-    state.mode = 'direct';
-    state.steps = [];
-    updateResult();
-  });
-  dom.steppedBtn.addEventListener('click', () => {
-    if (state.mode === 'stepped') return;
-    state.mode = 'stepped';
-    // Auto-add one step if empty
-    if (state.steps.length === 0) state.steps.push('EUR');
+  // Swap
+  document.querySelector('[data-action="swap"]').addEventListener('click', () => {
+    [state.baseCurrency, state.targetCurrency] = [state.targetCurrency, state.baseCurrency];
     updateResult();
   });
 
   // Add step
   dom.addBtn.addEventListener('click', () => {
-    state.steps.push('EUR');
+    state.steps.push('GBP');
     updateResult();
   });
 
@@ -531,7 +556,7 @@ function bindEvents() {
     dom.themeBtn.innerHTML = getThemeIcon();
   });
 
-  // Remove step (delegation)
+  // Remove step (delegation on steps container)
   dom.stepsContainer.addEventListener('click', (e) => {
     const btn = e.target.closest('[data-action="removeStep"]');
     if (!btn) return;
@@ -543,11 +568,14 @@ function bindEvents() {
   // Trigger dropdown (delegation on root)
   const root = document.getElementById('app');
   root.addEventListener('click', (e) => {
-    const trigger = e.target.closest('.step-trigger');
+    const trigger = e.target.closest('.curr-trigger');
     if (!trigger) return;
+    const role = trigger.dataset.role;
     const stepIndex = trigger.dataset.stepIndex !== undefined ? parseInt(trigger.dataset.stepIndex) : null;
-    const code = state.steps[stepIndex] || 'EUR';
-    showDropdown('step', code, stepIndex);
+    const code = role === 'base' ? state.baseCurrency
+      : role === 'target' ? state.targetCurrency
+      : state.steps[stepIndex] || 'USD';
+    showDropdown(role, code, stepIndex);
   });
 }
 
