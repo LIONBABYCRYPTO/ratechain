@@ -2,7 +2,7 @@
 // RateChain — Interactive Currency & Crypto Converter v1.0
 // ============================================================
 // APIs:
-//   - Frankfurter (fiat rates): https://api.frankfurter.dev/latest
+//   - Frankfurter (fiat rates): https://api.frankfurter.dev/v2/rates?base=USD
 //   - CoinGecko (crypto prices): https://api.coingecko.com/api/v3/coins/markets
 //   - CoinGecko (coin icons): https://assets.coingecko.com/coins/images/{id}/thumb/{file}
 // All cached in localStorage with 5-min TTL.
